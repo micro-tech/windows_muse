@@ -1,0 +1,244 @@
+//! Chat-hub agent-command watcher.
+//!
+//! The bottom terminal is agent-runnable: this loop polls the chat hub's
+//! `command` room (the same room Helix's chat-command loop watches), and when
+//! a message arrives from an allowed sender (cobble-jr, john) starting with
+//! `!`, it runs the rest of the message as an agent command in the terminal
+//! and POSTs the output back to the room.
+//!
+//! Why polling, not the hub's long-poll `chat_watch`: a 5-second poll is the
+//! simplest correct loop for a scaffold, and it needs no persistent connection
+//! handling. Upgrading to long-poll is a noted follow-up in the README.
+//!
+//! Safety notes, all deliberate:
+//! - The hub token comes from `config.toml` in the app config dir (0600 on
+//!   Unix; the user's own profile dir on Windows). No token is ever in the
+//!   repo, in code, or in chat. If the config is missing or the token is a
+//!   placeholder, the watcher stays disabled and the UI says so.
+//! - On the FIRST poll the watcher seeds its cursor to the newest message id
+//!   WITHOUT running anything, so restarting the app never re-runs old
+//!   commands (the same cursor-seed discipline Helix uses).
+//! - Agent commands go through the same allowlist as the terminal module, so
+//!   a hub message can only run a read-only allowlisted command.
+//! - Output posted back is capped at ~7500 bytes (the hub caps messages at
+//!   8 KB), truncated on a UTF-8 char boundary.
+
+use crate::config::{load_hub_config, HubConfig};
+use crate::terminal::run_agent_command_capture;
+use serde_json::Value;
+use std::thread;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter};
+
+/// How often the watcher polls the hub.
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// How long to wait before retrying when the hub config is missing.
+const CONFIG_RETRY_INTERVAL: Duration = Duration::from_secs(10);
+/// Maximum output bytes posted back to the hub (hub message cap is 8 KB).
+const MAX_POST_BYTES: usize = 7500;
+
+/// Status the UI shows for the hub watcher. Stored in app state and served by
+/// the `get_hub_status` command.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HubStatus {
+    /// True when a config file with a real token was found.
+    pub configured: bool,
+    /// Last poll error, if any (for the UI to show why it is not working).
+    pub last_error: Option<String>,
+}
+
+/// The watcher's shared status, kept in app state.
+pub type HubStatusState = std::sync::Mutex<HubStatus>;
+
+/// Start the hub watcher on a background thread. Returns immediately; the
+/// loop runs for the life of the app.
+pub fn start_hub_watcher(app: AppHandle) {
+    thread::spawn(move || {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+        {
+            Ok(client) => client,
+            Err(err) => {
+                set_status(
+                    &app,
+                    false,
+                    Some(format!("failed to build HTTP client: {}", err)),
+                );
+                return;
+            }
+        };
+
+        // Cursor: the newest message id seen. Seeded on the first poll without
+        // running anything, so a restart never re-runs old commands.
+        let mut last_seen_id: Option<u64> = None;
+        let mut seeded = false;
+
+        loop {
+            let Some(config) = load_hub_config() else {
+                set_status(
+                    &app,
+                    false,
+                    Some(
+                        "hub not configured — add hub_url and hub_token to config.toml".to_string(),
+                    ),
+                );
+                thread::sleep(CONFIG_RETRY_INTERVAL);
+                continue;
+            };
+            set_status(&app, true, None);
+
+            match poll_once(&client, &config, &mut last_seen_id, &mut seeded, &app) {
+                Ok(()) => set_status(&app, true, None),
+                Err(err) => set_status(&app, true, Some(err)),
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+    });
+}
+
+fn set_status(app: &AppHandle, configured: bool, last_error: Option<String>) {
+    if let Some(state) = app.try_state::<HubStatusState>() {
+        if let Ok(mut status) = state.lock() {
+            *status = HubStatus {
+                configured,
+                last_error,
+            };
+        }
+    }
+    let _ = app.emit(
+        "hub-status",
+        HubStatus {
+            configured,
+            last_error,
+        },
+    );
+}
+
+/// One poll cycle: fetch new messages, run any `!` commands from allowed
+/// senders, post the results back.
+fn poll_once(
+    client: &reqwest::blocking::Client,
+    config: &HubConfig,
+    last_seen_id: &mut Option<u64>,
+    seeded: &mut bool,
+    app: &AppHandle,
+) -> Result<(), String> {
+    let mut url = format!(
+        "{}/api/messages?room=command&limit=50",
+        config.hub_url.trim_end_matches('/')
+    );
+    if let Some(since) = *last_seen_id {
+        url.push_str(&format!("&since={}", since));
+    }
+
+    let response = client
+        .get(&url)
+        .bearer_auth(&config.hub_token)
+        .send()
+        .map_err(|err| format!("hub GET failed: {}", err))?;
+
+    if !response.status().is_success() {
+        return Err(format!("hub GET returned {}", response.status()));
+    }
+    let body: Value = response
+        .json()
+        .map_err(|err| format!("hub GET returned bad JSON: {}", err))?;
+
+    // The hub returns either `{ "messages": [...] }` or a bare array; accept
+    // both so a shape change does not kill the watcher.
+    let messages: &[Value] = match body.as_array() {
+        Some(messages) => messages,
+        None => body
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|m| m.as_slice())
+            .unwrap_or(&[]),
+    };
+
+    let mut max_id = *last_seen_id;
+    for message in messages {
+        let Some(id) = message_id(message) else {
+            continue;
+        };
+        if let Some(last) = max_id {
+            if id <= last {
+                continue;
+            }
+        }
+        max_id = Some(id);
+
+        // First poll: seed the cursor, do not run anything.
+        if !*seeded {
+            continue;
+        }
+
+        let sender = message.get("sender").and_then(|s| s.as_str()).unwrap_or("");
+        let text = message.get("body").and_then(|b| b.as_str()).unwrap_or("");
+        if !config.allowed_senders.iter().any(|s| s == sender) {
+            continue;
+        }
+        let Some(command) = text.strip_prefix('!').map(str::trim) else {
+            continue;
+        };
+        if command.is_empty() {
+            continue;
+        }
+
+        handle_agent_command(client, config, app, command);
+    }
+
+    if !*seeded {
+        *seeded = true;
+    }
+    *last_seen_id = max_id;
+    Ok(())
+}
+
+/// Extract a numeric message id, accepting either a JSON number or a numeric
+/// string (the hub has returned both shapes over time).
+fn message_id(message: &Value) -> Option<u64> {
+    match message.get("id") {
+        Some(Value::Number(n)) => n.as_u64(),
+        Some(Value::String(s)) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Run one agent command and post the result back to the `command` room.
+///
+/// A single execution does both jobs: lines stream into the bottom terminal
+/// as they arrive (tagged `[agent]`, so John sees what the agent ran) and the
+/// combined output is what gets posted.
+fn handle_agent_command(
+    client: &reqwest::blocking::Client,
+    config: &HubConfig,
+    app: &AppHandle,
+    command: &str,
+) {
+    let reply = match run_agent_command_capture(app, command, MAX_POST_BYTES) {
+        Ok(output) => format!("$ {}\n{}", command, output),
+        Err(reason) => format!("$ {}\nrejected: {}", command, reason),
+    };
+
+    let post_url = format!("{}/api/messages", config.hub_url.trim_end_matches('/'));
+    let payload = serde_json::json!({
+        "room": "command",
+        "body": reply,
+    });
+    if let Err(err) = client
+        .post(&post_url)
+        .bearer_auth(&config.hub_token)
+        .json(&payload)
+        .send()
+    {
+        let _ = app.emit(
+            "terminal-output",
+            crate::terminal::TerminalOutputLine {
+                stream: "stderr",
+                line: format!("[hub] failed to post result: {}", err),
+                source: "agent",
+            },
+        );
+    }
+}

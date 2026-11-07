@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Muse</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div id="brand">Muse</div>
+    <div id="zoom-controls">
+      <button id="zoom-out" title="Smaller text">A−</button>
+      <input id="zoom-slider" type="range" min="50" max="300" step="5" value="100" title="Text size" />
+      <button id="zoom-in" title="Larger text">A+</button>
+      <button id="zoom-reset" title="Reset to 100%">100%</button>
+      <span id="zoom-label">100%</span>
+    </div>
+    <div id="hub-status" title="Chat hub watcher status">
+      <span id="hub-dot" class="dot off"></span>
+      <span id="hub-text">hub: not configured</span>
+    </div>
+  </header>
+
+  <div id="main-row">
+    <aside id="agents-pane">
+      <h2>Agents</h2>
+      <ul id="agent-list">
+        <!-- Populated by app.js from the get_agents command. -->
+      </ul>
+      <!-- TODO: feed this list from a real source (see README "Sub-agent pane").
+           Options John is deciding between: Helix sub-agents via the chat hub,
+           grok-cli agents, or the Muse activity. Until then it renders a
+           static example so the layout and the working spinner are visible. -->
+      <p id="agents-note">Static example — feed TBD.</p>
+    </aside>
+
+    <section id="muse-view">
+      <!-- The muse.ai child WebView is positioned over this area by the Rust
+           backend (set_muse_view_rect). This text is only visible if the
+           WebView fails to load. -->
+      <p id="muse-loading">Loading Muse…</p>
+    </section>
+  </div>
+
+  <section id="terminal-pane">
+    <div id="terminal-header">
+      <span>Terminal — ASUS</span>
+      <span id="terminal-hint">Type a command, or watch agent commands run here (tagged [agent]).</span>
+    </div>
+    <div id="terminal-scrollback" aria-live="polite"></div>
+    <div id="terminal-input-row">
+      <span id="terminal-prompt">PS&gt;</span>
+      <input id="terminal-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder="hostname" />
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

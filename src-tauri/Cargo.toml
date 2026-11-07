@@ -1,0 +1,19 @@
+[package]
+name = "muse-windows-app"
+version = "0.1.0"
+description = "Muse.ai desktop app for Windows (Tauri v2) — muse.ai view, sub-agent pane, agent-runnable bottom terminal"
+authors = ["John McConnell"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+
+[profile.release]
+panic = "unwind"

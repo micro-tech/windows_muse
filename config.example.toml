@@ -1,0 +1,20 @@
+# Muse Windows app — hub config (EXAMPLE — copy, do not commit the real one)
+#
+# Copy this file to the app's config directory and fill in your own token:
+#   Windows: %APPDATA%\muse-windows-app\config.toml
+#   Linux:   ~/.config/muse-windows-app/config.toml
+#
+# The token is a chat-hub token minted for this app. It lives ONLY in that
+# on-machine file — never in the repo, never in chat, never in a screenshot.
+# If this file is missing, or the token is still the placeholder below, the
+# hub watcher stays disabled and the UI says "hub: not configured".
+
+# Base URL of the chat hub (John's hub — not a secret, it is his own domain).
+hub_url = "https://chat.micro-tech.xyz"
+
+# Bearer token for the hub. Replace the placeholder with your own token.
+hub_token = "PASTE_YOUR_HUB_TOKEN_HERE"
+
+# Senders whose `!` commands the watcher will run. The hub stamps the sender
+# from the token, so only these two can drive the terminal.
+allowed_senders = ["cobble-jr", "john"]
