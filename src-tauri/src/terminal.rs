@@ -21,7 +21,7 @@
 
 use crate::allowlist::{check_agent_command, AllowlistDecision};
 use serde::Serialize;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -115,11 +115,27 @@ fn run_command_blocking(
     // One reader thread per stream, so a chatty stderr cannot block stdout.
     // Lines are forwarded to the frontend as they arrive and collected for
     // the combined output.
+    // Both streams are boxed as `Box<dyn Read + Send>`: `ChildStdout` and
+    // `ChildStderr` are different types, so they cannot share one array
+    // unboxed — but both implement `Read`, and the box is `Send`, so the
+    // reader threads take them either way.
     let (tx, rx) = mpsc::channel::<TerminalOutputLine>();
     let mut readers = Vec::new();
     for (stream_name, stream) in [
-        ("stdout", child.stdout.take()),
-        ("stderr", child.stderr.take()),
+        (
+            "stdout",
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn Read + Send>),
+        ),
+        (
+            "stderr",
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn Read + Send>),
+        ),
     ] {
         let Some(stream) = stream else {
             continue;

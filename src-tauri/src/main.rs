@@ -27,9 +27,9 @@ mod crew_parse;
 mod hub;
 mod terminal;
 
-use config::{clamp_zoom, load_settings, save_settings, HubStatus};
+use config::{clamp_zoom, load_settings, save_settings};
 use crew::{AgentRow, CrewState};
-use hub::{start_hub_watcher, HubStatusState};
+use hub::{start_hub_watcher, HubStatus, HubStatusState};
 use std::sync::Mutex;
 use tauri::{webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl};
 use terminal::{run_terminal_command_streaming, CommandSource};
@@ -152,9 +152,11 @@ fn main() {
             get_hub_status,
         ])
         .setup(|app| {
-            let window = app
-                .get_webview_window("main")
-                .ok_or("main window not found")?;
+            // NOTE: the child WebView is attached to the plain `Window`, not
+            // the `WebviewWindow` — `Window::add_child` (tauri `unstable`
+            // feature) exists only on `Window`; `WebviewWindow` exposes no
+            // way to reach its inner window, so fetch the window directly.
+            let window = app.get_window("main").ok_or("main window not found")?;
 
             // Default main-view rectangle (left pane 280px, header 48px,
             // bottom terminal 220px). The shell measures the real rectangle
