@@ -175,7 +175,7 @@ fn set_status(app: &AppHandle, configured: bool, last_error: Option<String>) {
         if let Ok(mut status) = state.lock() {
             *status = HubStatus {
                 configured,
-                last_error,
+                last_error: last_error.clone(),
             };
         }
     }
