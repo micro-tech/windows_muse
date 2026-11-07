@@ -43,32 +43,48 @@
     });
   }
 
-  // --- Agents pane (static example for now — see README "Sub-agent pane"). ---
+  // --- Agents pane (live crew feed — see README "Sub-agent pane"). ---
+  // Initial load comes from get_agents; afterwards the Rust backend emits
+  // a crew-update event whenever a `crew`-room post changes the pane.
+  function renderAgents(agents) {
+    var list = document.getElementById("agent-list");
+    list.innerHTML = "";
+    agents.forEach(function (agent) {
+      var li = document.createElement("li");
+      if (agent.working) {
+        li.className = "working";
+      } else if (agent.status === "done") {
+        li.className = "done";
+      } else if (agent.status === "failed") {
+        li.className = "failed";
+      }
+      if (agent.working) {
+        var spinner = document.createElement("span");
+        spinner.className = "spinner";
+        li.appendChild(spinner);
+      }
+      var name = document.createElement("span");
+      name.className = "agent-name";
+      name.textContent = agent.name;
+      var status = document.createElement("span");
+      status.className = "agent-status";
+      status.textContent = agent.status;
+      li.appendChild(name);
+      li.appendChild(status);
+      if (agent.task) {
+        var task = document.createElement("span");
+        task.className = "agent-task";
+        task.textContent = agent.task;
+        li.appendChild(task);
+      }
+      list.appendChild(li);
+    });
+  }
+
   function loadAgents() {
     if (!invoke) return;
     invoke("get_agents")
-      .then(function (agents) {
-        var list = document.getElementById("agent-list");
-        list.innerHTML = "";
-        agents.forEach(function (agent) {
-          var li = document.createElement("li");
-          if (agent.working) li.className = "working";
-          if (agent.working) {
-            var spinner = document.createElement("span");
-            spinner.className = "spinner";
-            li.appendChild(spinner);
-          }
-          var name = document.createElement("span");
-          name.className = "agent-name";
-          name.textContent = agent.name;
-          var status = document.createElement("span");
-          status.className = "agent-status";
-          status.textContent = agent.status;
-          li.appendChild(name);
-          li.appendChild(status);
-          list.appendChild(li);
-        });
-      })
+      .then(renderAgents)
       .catch(function (err) {
         console.error("get_agents failed:", err);
       });
@@ -194,6 +210,9 @@
     });
     listen("hub-status", function (event) {
       renderHubStatus(event.payload);
+    });
+    listen("crew-update", function (event) {
+      renderAgents(event.payload);
     });
     listen("app-ready", function () {
       sendMuseRect();
