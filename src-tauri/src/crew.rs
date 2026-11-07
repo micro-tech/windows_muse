@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// How long a done/failed state stays visible before the row goes idle again.
 const DONE_DISPLAY: Duration = Duration::from_secs(10);

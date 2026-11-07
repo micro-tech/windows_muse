@@ -37,7 +37,7 @@ use crate::terminal::run_agent_command_capture;
 use serde_json::Value;
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// How often the watchers poll the hub.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
