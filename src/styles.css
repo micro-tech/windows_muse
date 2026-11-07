@@ -63,12 +63,23 @@ body {
 
 #agent-list { list-style: none; }
 #agent-list li {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 8px 12px; font-size: 13px; border-left: 3px solid transparent;
 }
 #agent-list li.working { border-left-color: #4ec9b0; background: #2d2d30; }
+#agent-list li.done { border-left-color: #89d185; }
+#agent-list li.failed { border-left-color: #f48771; }
+#agent-list li.done .agent-status { color: #89d185; }
+#agent-list li.failed .agent-status { color: #f48771; }
 #agent-list .agent-name { flex: 1; }
 #agent-list .agent-status { color: #999; font-size: 12px; }
+/* Task label under the name (past the spinner): what the agent is doing. */
+#agent-list .agent-task {
+  flex-basis: 100%;
+  padding-left: 22px;
+  font-size: 11px; color: #888;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* The little working animation: a spinner on any agent that is active. */
 .spinner {

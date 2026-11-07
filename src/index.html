@@ -26,13 +26,9 @@
     <aside id="agents-pane">
       <h2>Agents</h2>
       <ul id="agent-list">
-        <!-- Populated by app.js from the get_agents command. -->
+        <!-- Populated by app.js: get_agents on load, crew-update events live. -->
       </ul>
-      <!-- TODO: feed this list from a real source (see README "Sub-agent pane").
-           Options John is deciding between: Helix sub-agents via the chat hub,
-           grok-cli agents, or the Muse activity. Until then it renders a
-           static example so the layout and the working spinner are visible. -->
-      <p id="agents-note">Static example — feed TBD.</p>
+      <p id="agents-note">Live — Cobble jr posts crew status to the hub crew room.</p>
     </aside>
 
     <section id="muse-view">

@@ -13,6 +13,8 @@ A Tauri v2 (Rust) desktop app that wraps [muse.ai](https://muse.ai) for Windows 
 │ • Code Ranger 1   working  (spinner)                 │  ← muse.ai, in its own WebView
 │ • Code Reviewer   idle                              │
 │ • Quartermaster   idle                              │
+│ • Sapper 1        idle                              │
+│ • Artificer 1     idle                              │
 ├──────────┴───────────────────────────────────────────┤
 │ Terminal — ASUS                                      │
 │ PS> hostname                                         │  ← bottom terminal
@@ -46,15 +48,26 @@ If the config is missing or the token is a placeholder, the watcher stays disabl
 
 The header has A− / A+ buttons, a slider (50%–300%), and a reset. It sets the muse.ai WebView zoom (not the shell's) and persists it in `settings.json` in the same config directory, so the app opens at your saved zoom. Default is 100%.
 
-## Sub-agent pane — TODO (John decides what feeds it)
+## Sub-agent pane — live crew feed
 
-The left pane currently renders a static example list (Surveyor 1, Code Ranger 1, Code Reviewer, Quartermaster) so the layout and the working spinner are visible. The feed options are:
+The left pane shows John's crew — Surveyor 1, Code Ranger 1, Code Reviewer, Quartermaster, Sapper 1, Artificer 1 — and lights up whichever one is working. The feed is the chat hub's `crew` room, using the same config and token as the command watcher (one token covers both rooms).
 
-- Helix sub-agents via the chat hub,
-- grok-cli agents,
-- the Muse activity.
+### The contract (for whoever posts to the room)
 
-Pick one and the `get_agents` command in `src-tauri/src/main.rs` gets wired to it. Do not invent a data source in the meantime.
+A post in the `crew` room is a JSON object as the message body:
+
+```json
+{"agent": "Code Ranger 1", "status": "working", "task": "fixing the build"}
+```
+
+- `agent` — a crew name. The full name works, any casing; so do unambiguous shorthands: `"Ranger 1"` for Code Ranger 1, `"Reviewer"` for Code Reviewer, `"Surveyor"` for Surveyor 1. An input that could be two crew members (`"1"`, `"Code"`) matches nothing — guessing wrong is worse than ignoring the post. Unknown names are ignored.
+- `status` — one of `"working"`, `"done"`, `"failed"`. Anything else is ignored.
+- `task` — a short label of what the agent is doing, shown under the name while it works (and briefly while it shows done/failed). Optional; missing means empty.
+- Only posts from allowed senders (`cobble-jr`, `john` — the same list as the command watcher) move the pane. The hub stamps the sender from the token, so a random room member cannot light it up.
+
+Behavior: a `"working"` post shows the spinner on that agent plus the task label. A `"done"`/`"failed"` post clears the spinner and shows the done/failed state for 10 seconds, then the row goes back to idle. If the hub is not configured, or the room is empty, the pane shows the whole roster idle. Malformed posts are ignored silently — the room is a chat room, not a place to crash over. On startup the watcher seeds its cursor to the newest message, so a stale post from before launch never lights up the pane.
+
+Posts come from Cobble jr at runtime: when it dispatches a crew member it posts `working` with the task label, then `done` or `failed` when that member finishes. The app only reads the room — it never posts there.
 
 ## Build and run (on the ASUS, Windows)
 
@@ -91,14 +104,17 @@ muse-windows-app/
       main.rs              # entry: child WebView, zoom, Tauri commands
       allowlist.rs         # agent-command allowlist + metachar rejection (+ tests)
       config.rs            # hub config + settings (zoom) load/save
+      crew.rs              # crew pane state + `crew`-room posts -> `crew-update` events
+      crew_parse.rs        # crew message validation + name matching, std-only (+ tests)
       terminal.rs          # run commands, stream output to the terminal
-      hub.rs               # chat-hub command-room watcher
+      hub.rs               # chat-hub watchers: `command` room + `crew` room
 ```
 
 ## Known limitations / follow-ups
 
 - **Tauri `unstable` feature:** `Window::add_child` (the child WebView API) is behind Tauri's `unstable` feature. If Tauri stabilizes it, drop the flag from `src-tauri/Cargo.toml`. If the child WebView misbehaves on Windows, the fallback is a second window for muse.ai instead of a child WebView.
-- **Hub watcher polls** every 5 seconds. Upgrading to the hub's long-poll `chat_watch` is a follow-up.
+- **Hub watchers poll** every 5 seconds — both the `command` room and the `crew` room. Upgrading to the hub's long-poll `chat_watch` is a follow-up.
+- **Crew done/failed shows for 10 seconds**, then the row goes back to idle. A newer post for the same agent always wins over a pending reset.
 - **No JSON envelope (yet):** the watcher handles `!` + plain command text through the allowlist. Helix's `!` + JSON envelope (`how`/`which`/`time`/`scope`) is not parsed here — a follow-up if the app should accept structured tasks.
 - **Terminal is a simple scrollback + input line**, not a full terminal emulator. xterm.js is the upgrade path if the simple terminal is not enough (it would replace the scrollback div, not the Rust backend).
 - **Terminal height is fixed (220px).** A draggable splitter between the main view and the terminal is a follow-up.

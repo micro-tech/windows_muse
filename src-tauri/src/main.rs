@@ -22,12 +22,14 @@
 
 mod allowlist;
 mod config;
+mod crew;
+mod crew_parse;
 mod hub;
 mod terminal;
 
 use config::{clamp_zoom, load_settings, save_settings, HubStatus};
+use crew::{AgentRow, CrewState};
 use hub::{start_hub_watcher, HubStatusState};
-use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl};
 use terminal::{run_terminal_command_streaming, CommandSource};
@@ -42,44 +44,15 @@ struct AppState {
     hub_status: HubStatusState,
 }
 
-/// One row of the left sub-agent pane.
-#[derive(Debug, Clone, Serialize)]
-struct AgentRow {
-    name: String,
-    status: String,
-    working: bool,
-}
-
 /// The sub-agent list the left pane renders.
 ///
-/// TODO: feed this from a real source. John is deciding between: Helix
-/// sub-agents via the chat hub, grok-cli agents, or the Muse activity.
-/// Until he picks one, this returns a static example so the layout (and the
-/// working spinner) is visible. Do not invent a data source here.
+/// Live, not static: the rows come from the crew state, which the `crew`
+/// watcher in `hub.rs` keeps up to date from the chat hub's `crew` room.
+/// With no hub config (or an empty room) every row reads idle, so the pane
+/// still shows the roster exactly as the scaffold did.
 #[tauri::command]
-fn get_agents() -> Vec<AgentRow> {
-    vec![
-        AgentRow {
-            name: "Surveyor 1".to_string(),
-            status: "idle".to_string(),
-            working: false,
-        },
-        AgentRow {
-            name: "Code Ranger 1".to_string(),
-            status: "working".to_string(),
-            working: true,
-        },
-        AgentRow {
-            name: "Code Reviewer".to_string(),
-            status: "idle".to_string(),
-            working: false,
-        },
-        AgentRow {
-            name: "Quartermaster".to_string(),
-            status: "idle".to_string(),
-            working: false,
-        },
-    ]
+fn get_agents(crew: tauri::State<'_, CrewState>) -> Vec<AgentRow> {
+    crew.rows()
 }
 
 /// Position (and size) the muse.ai child WebView over the shell's main-view
@@ -169,6 +142,7 @@ fn main() {
                 last_error: None,
             }),
         })
+        .manage(CrewState::default())
         .invoke_handler(tauri::generate_handler![
             get_agents,
             set_muse_view_rect,

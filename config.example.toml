@@ -16,5 +16,7 @@ hub_url = "https://chat.micro-tech.xyz"
 hub_token = "PASTE_YOUR_HUB_TOKEN_HERE"
 
 # Senders whose `!` commands the watcher will run. The hub stamps the sender
-# from the token, so only these two can drive the terminal.
+# from the token, so only these two can drive the terminal. The same list
+# also gates `crew`-room posts — only these senders can light up the
+# sub-agent pane.
 allowed_senders = ["cobble-jr", "john"]
