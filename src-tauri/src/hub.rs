@@ -37,7 +37,10 @@
 //! - JSON dispatch: a structured `!` message is dispatched on its JSON
 //!   envelope (spec §3) — `how == "command"` runs the `command` field
 //!   (the raw JSON is never run as a shell command); `how == "llm"` is
-//!   rejected (the app has no LLM backends); anything else falls through
+//!   rejected (the app has no LLM backends); `how == "mcp"` invokes an
+//!   MCP tool on a configured stdio MCP server (see `mcp.rs` — v1 is
+//!   read-only, `to` is required, and the result is posted back chunked
+//!   `[n/m]` citing the hub message id). Anything else falls through
 //!   to the plain path and runs the raw text. `time` (integer seconds)
 //!   bounds how long the watcher waits for a JSON command — it does not
 //!   kill the process (see `run_agent_command_timed`).
@@ -152,7 +155,7 @@ fn start_command_watcher(app: AppHandle, client: reqwest::blocking::Client) {
                             }
                         }
                     }
-                    handle_agent_command(&client, &config, &app, command);
+                    handle_agent_command(&client, &config, &app, command, message_id(message));
                 },
             );
             match result {
@@ -305,17 +308,237 @@ fn message_id(message: &Value) -> Option<u64> {
 ///
 /// `command` is the text after `!` (trimmed). It is dispatched on its JSON
 /// envelope first (see `agent_command_reply`): a JSON `how == "command"`
-/// runs the `command` field; `how == "llm"` is rejected; anything else
-/// falls through to the plain path and runs the raw text as a shell
+/// runs the `command` field; `how == "llm"` is rejected; a JSON
+/// `how == "mcp"` invokes an MCP tool (see `handle_mcp_command`) and its
+/// result is posted back chunked `[n/m]`, citing `message_id`; anything
+/// else falls through to the plain path and runs the raw text as a shell
 /// command, as before.
 fn handle_agent_command(
     client: &reqwest::blocking::Client,
     config: &HubConfig,
     app: &AppHandle,
     command: &str,
+    message_id: Option<u64>,
 ) {
+    // MCP dispatch: a JSON envelope with how == "mcp" is an MCP tool call,
+    // not a shell command. (The `to` check already ran in the watcher:
+    // a `to` naming someone else never reaches here, and a missing `to`
+    // is a rejection inside the MCP handler, not a broadcast.)
+    if let Ok(json) = serde_json::from_str::<Value>(command) {
+        if json.get("how").and_then(|h| h.as_str()) == Some("mcp") {
+            handle_mcp_command(client, config, app, &json, message_id);
+            return;
+        }
+    }
     let reply = agent_command_reply(app, command);
     post_agent_reply(client, config, app, &reply);
+}
+
+/// Handle a `how: "mcp"` envelope (MCP spec §3/§5): validate, look up
+/// the server, check the read-tool allowlist, invoke the tool, and post
+/// the result (or a rejection) back to the `command` room, chunked
+/// `[n/m]` at 7500 bytes, citing the hub message id. Reports never
+/// start with `!`.
+///
+/// Validation order (first failure wins, nothing runs): envelope fields
+/// (`resolve_mcp_command`), then server lookup, then the read-tool
+/// allowlist, then the tool call itself (which also verifies via
+/// `tools/list` that the server actually offers the tool).
+fn handle_mcp_command(
+    client: &reqwest::blocking::Client,
+    config: &HubConfig,
+    app: &AppHandle,
+    json: &Value,
+    message_id: Option<u64>,
+) {
+    let header = mcp_header(json, message_id);
+    let call = match crate::mcp::resolve_mcp_command(json) {
+        Ok(call) => call,
+        Err(reason) => {
+            post_chunked_reply(
+                client,
+                config,
+                app,
+                &format!("{}\nrejected: {}", header, reason),
+            );
+            return;
+        }
+    };
+    let Some(server_cfg) = config.mcp.servers.get(&call.server) else {
+        post_chunked_reply(
+            client,
+            config,
+            app,
+            &format!("{}\nrejected: unknown mcp server '{}'", header, call.server),
+        );
+        return;
+    };
+    if !server_cfg.read_tools.iter().any(|t| t == &call.tool) {
+        post_chunked_reply(
+            client,
+            config,
+            app,
+            &format!(
+                "{}\nrejected: tool '{}' is not a read tool",
+                header, call.tool
+            ),
+        );
+        return;
+    }
+    let text = match run_mcp_call_timed(
+        &call.server,
+        server_cfg,
+        &call.tool,
+        &call.args,
+        call.timeout,
+    ) {
+        McpRun::Done(output) => format!("{}\n{}", header, output),
+        McpRun::Rejected(msg) => format!("{}\nrejected: {}", header, msg),
+        McpRun::TimedOut(secs) => format!(
+            "{}\ntimed out after {}s (mcp call still running)",
+            header, secs
+        ),
+    };
+    post_chunked_reply(client, config, app, &text);
+}
+
+/// The first line of an MCP reply: `mcp <server>.<tool> (msg <id>)`.
+/// Server/tool come from the envelope JSON when present as strings
+/// (best effort — validation may have rejected before they were
+/// checked); the hub message id is cited when known, so the sender can
+/// correlate call → result.
+fn mcp_header(json: &Value, message_id: Option<u64>) -> String {
+    let server = json.get("server").and_then(|s| s.as_str());
+    let tool = json.get("tool").and_then(|t| t.as_str());
+    let mut header = String::from("mcp");
+    match (server, tool) {
+        (Some(s), Some(t)) => header.push_str(&format!(" {}.{}", s, t)),
+        (Some(s), None) => header.push_str(&format!(" {}", s)),
+        _ => {}
+    }
+    if let Some(id) = message_id {
+        header.push_str(&format!(" (msg {})", id));
+    }
+    header
+}
+
+/// The result of an MCP tool call, for the reply back to the room.
+enum McpRun {
+    /// The tool ran and returned text.
+    Done(String),
+    /// The call failed (unknown tool, transport/protocol error, tool
+    /// error). The message is a plain error (no "rejected:" prefix;
+    /// the handler adds it).
+    Rejected(String),
+    /// The `time` budget expired while waiting. The MCP server child
+    /// may still be running — this bounds the watcher's wait, it does
+    /// not kill the child (same caveat as `AgentRun::TimedOut`; a real
+    /// kill is a follow-up).
+    TimedOut(u64),
+}
+
+/// Invoke an MCP tool, bounded by a wall-clock budget.
+///
+/// The call runs on a spawned thread and the watcher waits at most
+/// `timeout`; on expiry it reports a timeout and moves on, leaving a
+/// runaway MCP server to finish in the background. (The MCP client
+/// itself is blocking; the timeout is enforced here, not in the
+/// client — same pattern as `run_agent_command_timed`.)
+fn run_mcp_call_timed(
+    server_name: &str,
+    server: &crate::config::McpServerConfig,
+    tool: &str,
+    args: &Value,
+    timeout: Duration,
+) -> McpRun {
+    let server_name = server_name.to_string();
+    let server = server.clone();
+    let tool = tool.to_string();
+    let args = args.clone();
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
+    thread::spawn(move || {
+        let result = crate::mcp::call_mcp_tool(&server_name, &server, &tool, &args);
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(text)) => McpRun::Done(text),
+        Ok(Err(msg)) => McpRun::Rejected(msg),
+        Err(mpsc::RecvTimeoutError::Timeout) => McpRun::TimedOut(timeout.as_secs()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            McpRun::Rejected("mcp call ended without a result".to_string())
+        }
+    }
+}
+
+/// Post a reply back to the `command` room, chunked into `[n/m]` parts
+/// of at most MAX_POST_BYTES of content each (the hub caps messages at
+/// 8 KB). Each part is prefixed `[n/m] `. Used by the MCP path, whose
+/// tool results can exceed one message. A failed POST stops the
+/// remaining parts (and is reported in the terminal) so a partial
+/// result is not spammed across the room.
+fn post_chunked_reply(
+    client: &reqwest::blocking::Client,
+    config: &HubConfig,
+    app: &AppHandle,
+    text: &str,
+) {
+    let chunks = chunk_text(text, MAX_POST_BYTES);
+    let total = chunks.len();
+    let post_url = format!("{}/api/messages", config.hub_url.trim_end_matches('/'));
+    for (i, chunk) in chunks.iter().enumerate() {
+        let body = format!("[{}/{}] {}", i + 1, total, chunk);
+        let payload = serde_json::json!({
+            "room": "command",
+            "body": body,
+        });
+        if let Err(err) = client
+            .post(&post_url)
+            .bearer_auth(&config.hub_token)
+            .json(&payload)
+            .send()
+        {
+            let _ = app.emit(
+                "terminal-output",
+                crate::terminal::TerminalOutputLine {
+                    stream: "stderr",
+                    line: format!("[hub] failed to post result: {}", err),
+                    source: "agent",
+                },
+            );
+            break;
+        }
+    }
+}
+
+/// Split text into chunks of at most `max_bytes` bytes, never splitting
+/// a UTF-8 character. Always returns at least one chunk (possibly
+/// empty, when the text is empty).
+fn chunk_text(text: &str, max_bytes: usize) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = (start + max_bytes).min(text.len());
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            // A single char wider than max_bytes (cannot happen with a
+            // sane max_bytes); take one char to guarantee progress.
+            end = start
+                + text[start..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(1);
+            end = end.min(text.len());
+        }
+        chunks.push(&text[start..end]);
+        start = end;
+    }
+    if chunks.is_empty() {
+        chunks.push("");
+    }
+    chunks
 }
 
 /// Run one agent command and build the reply body to post back to the
