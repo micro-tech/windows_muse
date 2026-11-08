@@ -40,8 +40,6 @@ struct AppState {
     /// Kept so a resize can re-apply it; the shell re-sends it on layout
     /// changes anyway.
     muse_rect: Mutex<Option<(f64, f64, f64, f64)>>,
-    /// Hub watcher status, served to the UI by `get_hub_status`.
-    hub_status: HubStatusState,
 }
 
 /// The sub-agent list the left pane renders.
@@ -122,9 +120,8 @@ fn run_terminal_command(
 
 /// Hub watcher status for the UI (configured? last error?).
 #[tauri::command]
-fn get_hub_status(state: tauri::State<'_, AppState>) -> HubStatus {
+fn get_hub_status(state: tauri::State<'_, HubStatusState>) -> HubStatus {
     state
-        .hub_status
         .lock()
         .map(|status| status.clone())
         .unwrap_or(HubStatus {
@@ -137,11 +134,11 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState {
             muse_rect: Mutex::new(None),
-            hub_status: Mutex::new(HubStatus {
-                configured: false,
-                last_error: None,
-            }),
         })
+        .manage(HubStatusState::new(HubStatus {
+            configured: false,
+            last_error: None,
+        }))
         .manage(CrewState::default())
         .invoke_handler(tauri::generate_handler![
             get_agents,
