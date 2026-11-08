@@ -29,12 +29,25 @@
 //!   lights up the pane from a stale `crew` post.
 //! - Agent commands go through the same allowlist as the terminal module, so
 //!   a hub message can only run a read-only allowlisted command.
+//! - Addressing: a structured `!` message carrying a `to` field is for one
+//!   agent only — if it names someone else (per `agent_name` in the
+//!   config, default `"john"`), this watcher ignores it entirely: no run,
+//!   no reply, no terminal display. Plain `!` commands and broadcasts
+//!   (no `to`) run as before.
+//! - JSON dispatch: a structured `!` message is dispatched on its JSON
+//!   envelope (spec §3) — `how == "command"` runs the `command` field
+//!   (the raw JSON is never run as a shell command); `how == "llm"` is
+//!   rejected (the app has no LLM backends); anything else falls through
+//!   to the plain path and runs the raw text. `time` (integer seconds)
+//!   bounds how long the watcher waits for a JSON command — it does not
+//!   kill the process (see `run_agent_command_timed`).
 //! - Output posted back is capped at ~7500 bytes (the hub caps messages at
 //!   8 KB), truncated on a UTF-8 char boundary.
 
 use crate::config::{load_hub_config, HubConfig};
 use crate::terminal::run_agent_command_capture;
 use serde_json::Value;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -126,6 +139,18 @@ fn start_command_watcher(app: AppHandle, client: reqwest::blocking::Client) {
                     };
                     if command.is_empty() {
                         return;
+                    }
+                    // Addressing (spec §4 step 4): a structured `!` message
+                    // carrying a `to` field is for one agent only. If it
+                    // names someone else, ignore it entirely — no run, no
+                    // reply, no terminal display. Plain `!` commands (not
+                    // JSON) and broadcasts (no `to`) run as before.
+                    if let Ok(json) = serde_json::from_str::<Value>(command) {
+                        if let Some(to) = json.get("to").and_then(|v| v.as_str()) {
+                            if to != config.agent_name {
+                                return;
+                            }
+                        }
                     }
                     handle_agent_command(&client, &config, &app, command);
                 },
@@ -277,17 +302,147 @@ fn message_id(message: &Value) -> Option<u64> {
 /// A single execution does both jobs: lines stream into the bottom terminal
 /// as they arrive (tagged `[agent]`, so John sees what the agent ran) and the
 /// combined output is what gets posted.
+///
+/// `command` is the text after `!` (trimmed). It is dispatched on its JSON
+/// envelope first (see `agent_command_reply`): a JSON `how == "command"`
+/// runs the `command` field; `how == "llm"` is rejected; anything else
+/// falls through to the plain path and runs the raw text as a shell
+/// command, as before.
 fn handle_agent_command(
     client: &reqwest::blocking::Client,
     config: &HubConfig,
     app: &AppHandle,
     command: &str,
 ) {
-    let reply = match run_agent_command_capture(app, command, MAX_POST_BYTES) {
-        Ok(output) => format!("$ {}\n{}", command, output),
-        Err(reason) => format!("$ {}\nrejected: {}", command, reason),
-    };
+    let reply = agent_command_reply(app, command);
+    post_agent_reply(client, config, app, &reply);
+}
 
+/// Run one agent command and build the reply body to post back to the
+/// `command` room.
+///
+/// Dispatch (spec §3/§4):
+/// - JSON with `how == "command"`: run the `command` field through the
+///   allowlist + executor. A missing/non-string `command` field is a
+///   rejection; nothing runs. `time` (integer seconds) bounds the wait.
+/// - JSON with `how == "llm"`: rejection — the app has no LLM backends.
+/// - Anything else (not JSON, or JSON without a valid `how`): the plain
+///   path — run the raw text as a shell command, as before.
+///
+/// The `$` line echoes what actually ran: the extracted command for a
+/// JSON command, the raw text otherwise (and for a dispatch rejection,
+/// the raw text, so the sender can see what was rejected).
+fn agent_command_reply(app: &AppHandle, command: &str) -> String {
+    match resolve_agent_command(command) {
+        Ok((to_run, timeout)) => match run_agent_command_timed(app, &to_run, timeout) {
+            AgentRun::Done(output) => format!("$ {}\n{}", to_run, output),
+            // The capture's Err already reads "rejected: ..." — post it
+            // as-is. (The old code prepended a second "rejected: " here.)
+            AgentRun::Rejected(msg) => format!("$ {}\n{}", to_run, msg),
+            AgentRun::TimedOut(secs) => format!(
+                "$ {}\ntimed out after {}s (command still running)",
+                to_run, secs
+            ),
+        },
+        Err(reason) => format!("$ {}\nrejected: {}", command, reason),
+    }
+}
+
+/// Resolve a `!` message into the shell command to run and an optional
+/// wall-clock budget. Returns `Err(reason)` for a message that must be
+/// rejected without running anything.
+///
+/// - Not JSON, or JSON that is not an object, or JSON without a valid
+///   `how` → the plain path: run the raw text as a shell command.
+/// - JSON `how == "command"` → the `command` field (string, required);
+///   `time` (integer seconds, if present and a positive integer) is the
+///   budget. A malformed `time` is ignored (no budget), not a rejection —
+///   the command still runs, just unbounded like a plain command.
+/// - JSON `how == "llm"` → rejection (the app has no LLM backends).
+/// - `which` and `scope` are ignored: the app only runs locally, and its
+///   allowlist is the enforcement.
+///
+/// Note: the watcher already parsed this text once for the `to` check.
+/// Parsing again here is cheap (≤ 8 KB) and keeps addressing separate
+/// from dispatch.
+fn resolve_agent_command(command: &str) -> Result<(String, Option<Duration>), String> {
+    let Ok(json) = serde_json::from_str::<Value>(command) else {
+        return Ok((command.to_string(), None));
+    };
+    let Some(obj) = json.as_object() else {
+        return Ok((command.to_string(), None));
+    };
+    match obj.get("how").and_then(|h| h.as_str()) {
+        Some("command") => {
+            let Some(cmd) = obj.get("command").and_then(|c| c.as_str()) else {
+                return Err("command JSON needs a command string".to_string());
+            };
+            let timeout = obj
+                .get("time")
+                .and_then(|t| t.as_u64())
+                .filter(|&s| s > 0)
+                .map(Duration::from_secs);
+            Ok((cmd.to_string(), timeout))
+        }
+        Some("llm") => Err("llm tasks are Helix-only — the app has no LLM backends".to_string()),
+        _ => Ok((command.to_string(), None)),
+    }
+}
+
+/// The result of running one agent command, for the reply back to the room.
+enum AgentRun {
+    /// Ran to completion; the combined output.
+    Done(String),
+    /// The allowlist rejected it (nothing ran). The message already reads
+    /// "rejected: ..." (it comes from `run_agent_command_capture`).
+    Rejected(String),
+    /// The `time` budget expired while waiting. The child process is still
+    /// running in the background — this bounds the watcher's wait, it does
+    /// not kill the process. The executor (`terminal.rs`) has no timeout
+    /// mechanism and no kill handle reaches this module; a real kill is a
+    /// `terminal.rs` follow-up.
+    TimedOut(u64),
+}
+
+/// Run an agent command, optionally bounded by a wall-clock budget.
+///
+/// With no budget this is exactly `run_agent_command_capture`. With a
+/// budget the capture runs on a spawned thread and the watcher waits at
+/// most that long; on expiry it reports a timeout and moves on, leaving
+/// the runaway command to finish in the background (its output still
+/// streams to the terminal via the events the capture emits).
+fn run_agent_command_timed(app: &AppHandle, command: &str, timeout: Option<Duration>) -> AgentRun {
+    let Some(timeout) = timeout else {
+        return match run_agent_command_capture(app, command, MAX_POST_BYTES) {
+            Ok(output) => AgentRun::Done(output),
+            Err(msg) => AgentRun::Rejected(msg),
+        };
+    };
+    let app = app.clone();
+    let command = command.to_string();
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
+    thread::spawn(move || {
+        let result = run_agent_command_capture(&app, &command, MAX_POST_BYTES);
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) => AgentRun::Done(output),
+        Ok(Err(msg)) => AgentRun::Rejected(msg),
+        Err(mpsc::RecvTimeoutError::Timeout) => AgentRun::TimedOut(timeout.as_secs()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            AgentRun::Rejected("rejected: command thread ended without a result".to_string())
+        }
+    }
+}
+
+/// Post a reply back to the `command` room. A failed POST is reported in
+/// the terminal (stderr) so the failure is visible instead of silent.
+fn post_agent_reply(
+    client: &reqwest::blocking::Client,
+    config: &HubConfig,
+    app: &AppHandle,
+    reply: &str,
+) {
     let post_url = format!("{}/api/messages", config.hub_url.trim_end_matches('/'));
     let payload = serde_json::json!({
         "room": "command",
