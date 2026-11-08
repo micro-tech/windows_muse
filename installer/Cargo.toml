@@ -1,0 +1,23 @@
+[package]
+name = "muse-installer"
+version = "0.1.0"
+edition = "2021"
+description = "Windows installer for Muse for Windows (Tauri desktop app) — no admin required"
+authors = ["John McConnell"]
+
+[[bin]]
+name = "muse-installer"
+path = "src/main.rs"
+
+[dependencies]
+# Same crates the RustRecon installer uses, so the dep set is familiar.
+# No network / temp-dir work here (the app exe is copied from disk, not
+# downloaded), so indicatif + tempfile are deliberately left out.
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+dirs = "7.0.0"
+dialoguer = "0.12.0"
+console = "0.16.6"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56.0"

@@ -86,12 +86,47 @@ cargo tauri build      # build the installer (NSIS) into src-tauri/target/releas
 
 `cargo tauri dev` serves the plain HTML/CSS/JS in `src/` — there is no bundler and no npm step. The shell uses Tauri's global JS API (`window.__TAURI__`), enabled by `"withGlobalTauri": true` in `tauri.conf.json`.
 
+## Installing (on the ASUS, Windows)
+
+The repo ships a small standalone Rust installer (`installer/`) that copies the built app into `%LOCALAPPDATA%\muse-windows-app` — no admin required. It creates Desktop + Start Menu shortcuts, writes a fresh `config.toml` from `config.example.toml` only if you don't already have one (an existing config is never overwritten, so your hub token is safe), copies itself into the install dir, and registers an uninstaller under Settings → Apps → Muse for Windows.
+
+1. Build the app (release):
+   ```
+   cargo tauri build
+   ```
+   This puts `muse-windows-app.exe` in `src-tauri/target/release/`.
+2. Build the installer:
+   ```
+   cargo build --release --manifest-path installer/Cargo.toml
+   ```
+   (or `cd installer && cargo build --release`) — this produces `installer/target/release/muse-installer.exe`.
+3. Put `muse-installer.exe` in the same folder as `muse-windows-app.exe` and run it:
+   ```
+   muse-installer.exe
+   ```
+   Or point it at the exe explicitly:
+   ```
+   muse-installer.exe --from C:\path\to\muse-windows-app.exe
+   ```
+4. Edit `%APPDATA%\muse-windows-app\config.toml` and replace `PASTE_YOUR_HUB_TOKEN_HERE` with your hub token (the installer never writes a real token). Restart the app.
+
+Flags:
+- `--silent` / `-s` — no prompts, defaults (install dir, both shortcuts, reinstall over an existing install).
+- `--uninstall` — removes the install dir, both shortcuts, and the uninstaller registration. Your `config.toml` (hub token) is left alone — delete it by hand if you want it gone.
+- `--force` / `-f` — reinstall over an existing install without asking (interactive mode only; silent already overwrites).
+- `--from <path>` — path to the `muse-windows-app.exe` to install. Without it, the installer looks next to itself, then at the repo's `src-tauri/target/release/`.
+
+To uninstall later: `muse-installer.exe --uninstall`, or Settings → Apps → Muse for Windows → Uninstall.
+
 ## Project layout
 
 ```
 muse-windows-app/
   README.md
   config.example.toml      # hub config template (placeholder token only)
+  installer/               # standalone Rust installer (muse-installer.exe, no admin)
+    Cargo.toml
+    src/main.rs
   src/                     # app shell (plain HTML/CSS/JS, no bundler)
     index.html
     styles.css
