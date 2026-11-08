@@ -1,9 +1,10 @@
 //! Config and settings for the Muse Windows app.
 //!
 //! Two files live in the app's config directory (see [`app_config_dir`]):
-//! - `config.toml` — hub credentials (URL, token, allowed senders). John fills
-//!   this in on-machine; the repo ships only `config.example.toml` with a
-//!   placeholder. Never commit a real token.
+//! - `config.toml` — hub credentials (URL, token, allowed senders) and the
+//!   app's agent name (`agent_name`, default `"john"`) for the `to`
+//!   addressing check. John fills this in on-machine; the repo ships only
+//!   `config.example.toml` with a placeholder. Never commit a real token.
 //! - `settings.json` — UI preferences (currently just the WebView zoom level).
 //!   The app reads and writes this itself; no secrets in it.
 
@@ -23,10 +24,20 @@ pub struct HubConfig {
     /// `cobble-jr` and `john` when the key is absent.
     #[serde(default = "default_allowed_senders")]
     pub allowed_senders: Vec<String>,
+    /// This app's hub agent name, used for the `to` addressing check
+    /// (chat-command spec §4 step 4): a structured `!` message addressed
+    /// to a different agent is ignored entirely. Defaults to `john`
+    /// when the key is absent (the app uses the john hub token).
+    #[serde(default = "default_agent_name")]
+    pub agent_name: String,
 }
 
 fn default_allowed_senders() -> Vec<String> {
     vec!["cobble-jr".to_string(), "john".to_string()]
+}
+
+fn default_agent_name() -> String {
+    "john".to_string()
 }
 
 /// UI preferences, read from / written to `settings.json`.

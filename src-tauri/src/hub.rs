@@ -29,6 +29,11 @@
 //!   lights up the pane from a stale `crew` post.
 //! - Agent commands go through the same allowlist as the terminal module, so
 //!   a hub message can only run a read-only allowlisted command.
+//! - Addressing: a structured `!` message carrying a `to` field is for one
+//!   agent only — if it names someone else (per `agent_name` in the
+//!   config, default `"john"`), this watcher ignores it entirely: no run,
+//!   no reply, no terminal display. Plain `!` commands and broadcasts
+//!   (no `to`) run as before.
 //! - Output posted back is capped at ~7500 bytes (the hub caps messages at
 //!   8 KB), truncated on a UTF-8 char boundary.
 
@@ -126,6 +131,18 @@ fn start_command_watcher(app: AppHandle, client: reqwest::blocking::Client) {
                     };
                     if command.is_empty() {
                         return;
+                    }
+                    // Addressing (spec §4 step 4): a structured `!` message
+                    // carrying a `to` field is for one agent only. If it
+                    // names someone else, ignore it entirely — no run, no
+                    // reply, no terminal display. Plain `!` commands (not
+                    // JSON) and broadcasts (no `to`) run as before.
+                    if let Ok(json) = serde_json::from_str::<Value>(command) {
+                        if let Some(to) = json.get("to").and_then(|v| v.as_str()) {
+                            if to != config.agent_name {
+                                return;
+                            }
+                        }
                     }
                     handle_agent_command(&client, &config, &app, command);
                 },

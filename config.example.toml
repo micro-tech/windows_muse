@@ -20,3 +20,10 @@ hub_token = "PASTE_YOUR_HUB_TOKEN_HERE"
 # also gates `crew`-room posts — only these senders can light up the
 # sub-agent pane.
 allowed_senders = ["cobble-jr", "john"]
+
+# This app's hub agent name, for the `to` addressing check: a structured
+# `!` message addressed to a different agent is ignored entirely (no run,
+# no reply). Defaults to "john" when the key is absent — the app uses the
+# john hub token, so "john" is its name. Only change this if the app ever
+# gets its own hub token under a different name.
+# agent_name = "john"
