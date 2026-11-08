@@ -27,3 +27,17 @@ allowed_senders = ["cobble-jr", "john"]
 # john hub token, so "john" is its name. Only change this if the app ever
 # gets its own hub token under a different name.
 # agent_name = "john"
+
+# MCP servers (stdio), for the `how: "mcp"` path. Default: none configured.
+# Each server is launched with its `command` + `args` when a tool call
+# addresses it by name, e.g. `!{"how": "mcp", "to": "john", "server": "fs",
+# "tool": "read_file", "args": {"path": "C:\\notes\\todo.txt"}, "scope": "read"}`.
+# v1 is READ-ONLY: only the tools listed in a server's `read_tools` may be
+# called via the hub, and a `write:` scope is rejected outright. List only
+# the tools you know are read-only for each server; a tool not on the list
+# is rejected even if the server offers it. Add a `[mcp.servers.<name>]`
+# section per server you want callable from the hub.
+# [mcp.servers.fs]
+# command = "C:\\tools\\fs-mcp.exe"
+# args = []
+# read_tools = ["read_file", "list_dir"]

@@ -1,14 +1,17 @@
 //! Config and settings for the Muse Windows app.
 //!
 //! Two files live in the app's config directory (see [`app_config_dir`]):
-//! - `config.toml` — hub credentials (URL, token, allowed senders) and the
+//! - `config.toml` — hub credentials (URL, token, allowed senders), the
 //!   app's agent name (`agent_name`, default `"john"`) for the `to`
-//!   addressing check. John fills this in on-machine; the repo ships only
-//!   `config.example.toml` with a placeholder. Never commit a real token.
+//!   addressing check, and MCP servers (`[mcp.servers.<name>]`, default
+//!   none configured) for the `how: "mcp"` path. John fills this in
+//!   on-machine; the repo ships only `config.example.toml` with a
+//!   placeholder. Never commit a real token.
 //! - `settings.json` — UI preferences (currently just the WebView zoom level).
 //!   The app reads and writes this itself; no secrets in it.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -30,6 +33,11 @@ pub struct HubConfig {
     /// when the key is absent (the app uses the john hub token).
     #[serde(default = "default_agent_name")]
     pub agent_name: String,
+    /// MCP servers (stdio), for the `how: "mcp"` path. Default: none
+    /// configured. Each server is launched with its `command` + `args`
+    /// when a tool call addresses it by name.
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 fn default_allowed_senders() -> Vec<String> {
@@ -38,6 +46,36 @@ fn default_allowed_senders() -> Vec<String> {
 
 fn default_agent_name() -> String {
     "john".to_string()
+}
+
+/// MCP server configuration (the `[mcp]` section of `config.toml`).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct McpConfig {
+    /// Servers by name, e.g. `[mcp.servers.fs]`. Default: empty (no
+    /// servers configured, so every `how: "mcp"` call is rejected as
+    /// an unknown server until John adds one).
+    #[serde(default)]
+    pub servers: BTreeMap<String, McpServerConfig>,
+}
+
+/// One stdio MCP server, launched with `command` + `args` when a tool
+/// call addresses it by name.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerConfig {
+    /// Binary to launch, e.g. `C:\tools\fs-mcp.exe` (or a bare name
+    /// resolved via PATH).
+    pub command: String,
+    /// Arguments to the binary. Default: none.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Tools on this server that may be called via the hub. v1 is
+    /// read-only: only tools listed here are callable, and a `write:`
+    /// scope is rejected outright. John lists the tools he knows are
+    /// read-only for each server he configures; a tool not on this
+    /// list is rejected ("tool '<tool>' is not a read tool"), even if
+    /// the server offers it. Default: none (no tools callable).
+    #[serde(default)]
+    pub read_tools: Vec<String>,
 }
 
 /// UI preferences, read from / written to `settings.json`.

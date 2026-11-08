@@ -25,6 +25,7 @@ mod config;
 mod crew;
 mod crew_parse;
 mod hub;
+mod mcp;
 mod terminal;
 
 use config::{clamp_zoom, load_settings, save_settings};
