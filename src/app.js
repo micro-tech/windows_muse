@@ -193,12 +193,20 @@
   });
 
   // Terminal output from the Rust backend (human AND agent commands).
+  // NOTE: `listen` registers via the `plugin:event|listen` IPC command, which
+  // needs the `core:event:allow-listen` permission (granted in
+  // src-tauri/capabilities/default.json). Without that permission the
+  // registration fails and no output ever reaches this pane — the pane then
+  // only shows the `PS> ...` echo. The `.catch` below makes such a failure
+  // visible instead of silent.
   if (listen) {
     listen("terminal-output", function (event) {
       var payload = event.payload;
       var cssClass = payload.stream === "stderr" ? "line-stderr" : "line-stdout";
       if (payload.source === "agent") cssClass = "line-agent";
       appendLine(payload.line, cssClass);
+    }).catch(function (err) {
+      appendLine("terminal-output events unavailable: " + err, "line-stderr");
     });
     listen("terminal-exit", function (event) {
       var code = event.payload.code;
@@ -207,6 +215,8 @@
         who + "(exit" + (code === null ? " — killed" : " " + code) + ")",
         "line-stderr"
       );
+    }).catch(function (err) {
+      appendLine("terminal-exit events unavailable: " + err, "line-stderr");
     });
     listen("hub-status", function (event) {
       renderHubStatus(event.payload);
