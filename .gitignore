@@ -1,3 +1,4 @@
 /target/
+src-tauri/target/
 /installer/target/
 *.log
