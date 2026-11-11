@@ -225,14 +225,14 @@ fn uninstall_string(installer_exe: &Path) -> String {
 fn register_uninstaller(install_dir: &Path, installer_exe: &Path, app_exe: &Path) -> Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (key, _) = hkcu.create_subkey(UNINSTALL_SUBKEY)?;
-    let install_location = install_dir.to_string_lossy();
-    let display_icon = app_exe.to_string_lossy();
+    let install_location = install_dir.to_string_lossy().into_owned();
+    let display_icon = app_exe.to_string_lossy().into_owned();
     key.set_value("DisplayName", &APP_NAME)?;
     key.set_value("DisplayVersion", &env!("CARGO_PKG_VERSION"))?;
     key.set_value("Publisher", &"John McConnell")?;
-    key.set_value("InstallLocation", &*install_location)?;
+    key.set_value("InstallLocation", &install_location)?;
     key.set_value("UninstallString", &uninstall_string(installer_exe))?;
-    key.set_value("DisplayIcon", &*display_icon)?;
+    key.set_value("DisplayIcon", &display_icon)?;
     key.set_value("NoModify", &1u32)?;
     key.set_value("NoRepair", &1u32)?;
     Ok(())
