@@ -1,0 +1,26 @@
+{
+  "tasks": [
+    {
+      "id": 1,
+      "title": "Hide the console window when launching from the icon (windows_subsystem)",
+      "description": "Launching the app from its icon opens a console window; closing that console kills the app because the exe is built as a console-subsystem binary. Add #![windows_subsystem = \"windows\"] to src-tauri/src/main.rs so Windows treats it as a GUI app.",
+      "status": "done",
+      "dependencies": [],
+      "priority": "low",
+      "details": "Symptom (John, Nov 10, 2026): he keeps killing the terminal window that opens when the app is started from its icon. Cause: src-tauri/src/main.rs has no windows_subsystem attribute, so the exe is a console-subsystem binary. When launched from Explorer/an icon, Windows creates a console window for it, and closing that console terminates the process (the app dies with it).\n\nFix: add `#![windows_subsystem = \"windows\"]` as the very first line of src-tauri/src/main.rs (a crate-level inner attribute; it must come before any item, including the //! doc comments). This marks the exe as a GUI (windows) subsystem binary, so Windows does not create a console window when it is launched from Explorer/an icon.\n\nSide effect: println! output will not be visible when the app is run from a terminal. That is expected and fine for a GUI app; the app's own logs are unaffected.\n\nBranch: ranger-no-console-window (off origin/main bac5a5c). No other files touched.",
+      "testStrategy": "Rebuild with `cargo tauri build` on the ASUS (Windows); launch the app from its icon and confirm no console window appears. Verification caveat: the sandbox cannot compile the Tauri app (no GTK3) and cannot verify a Windows build — the ASUS rebuild is the real verification.",
+      "subtasks": [
+        {
+          "id": "1.1",
+          "status": "done",
+          "title": "Add #![windows_subsystem = \"windows\"] as the first line of src-tauri/src/main.rs"
+        },
+        {
+          "id": "1.2",
+          "status": "done",
+          "title": "Create .zed/task_list.json and file this as task 1"
+        }
+      ]
+    }
+  ]
+}
