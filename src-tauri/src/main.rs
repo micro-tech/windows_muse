@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 //! Muse Windows app — Tauri v2 entry point.
 //!
 //! One window, three panes (the layout John asked for, modeled on grok-cli's
